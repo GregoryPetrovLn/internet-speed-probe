@@ -1,5 +1,11 @@
 import { UsageError } from './errors.js';
 
+/**
+ * setTimeout() silently clamps anything above 2^31-1 ms to 1 ms, which would
+ * turn "give me a very generous deadline" into "fail instantly".
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export const DEFAULTS = Object.freeze({
   requests: 10,
   timeoutMs: 30_000,
@@ -30,25 +36,33 @@ Examples:
 /**
  * Parses a positive integer from a CLI flag. Rejects "", "abc", "1.5", "-3"
  * and "10abc" — Number() alone would silently accept some of those as NaN
- * and parseInt() would happily read "10abc" as 10.
+ * and parseInt() would happily read "10abc" as 10. The upper bound matters too:
+ * past 2^53 the value is no longer the number the user typed.
  */
-function parsePositiveInt(raw, flag) {
+function parsePositiveInt(raw, flag, max = Number.MAX_SAFE_INTEGER) {
   if (raw === undefined) throw new UsageError(`${flag} requires a value`);
   if (!/^\d+$/.test(raw.trim())) {
     throw new UsageError(`${flag} must be a positive integer, got "${raw}"`);
   }
   const value = Number(raw);
   if (value < 1) throw new UsageError(`${flag} must be at least 1, got "${raw}"`);
+  if (!Number.isSafeInteger(value) || value > max) {
+    throw new UsageError(`${flag} must be at most ${max}, got "${raw}"`);
+  }
   return value;
 }
 
 /** Parses a non-negative integer (redirect count may legitimately be 0). */
-function parseNonNegativeInt(raw, flag) {
+function parseNonNegativeInt(raw, flag, max = Number.MAX_SAFE_INTEGER) {
   if (raw === undefined) throw new UsageError(`${flag} requires a value`);
   if (!/^\d+$/.test(raw.trim())) {
     throw new UsageError(`${flag} must be a non-negative integer, got "${raw}"`);
   }
-  return Number(raw);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > max) {
+    throw new UsageError(`${flag} must be at most ${max}, got "${raw}"`);
+  }
+  return value;
 }
 
 /**
@@ -73,11 +87,11 @@ export function parseArgs(argv) {
         break;
       case '-t':
       case '--timeout':
-        options.timeoutMs = parsePositiveInt(argv[++i], arg);
+        options.timeoutMs = parsePositiveInt(argv[++i], arg, MAX_TIMEOUT_MS);
         break;
       case '-r':
       case '--max-redirects':
-        options.maxRedirects = parseNonNegativeInt(argv[++i], arg);
+        options.maxRedirects = parseNonNegativeInt(argv[++i], arg, 1000);
         break;
       case '--no-cache-bust':
         options.cacheBust = false;

@@ -127,3 +127,36 @@ describe('formatting', () => {
     assert.equal(speedOf({ bytes: 1e6, totalMs: 1000 }), 8);
   });
 });
+
+describe('transfer-only throughput (regression)', () => {
+  it('excludes everything before the first byte', () => {
+    // 1 MB, 1 s total of which 500 ms was latency: 8 Mbit/s end-to-end,
+    // 16 Mbit/s of actual transfer.
+    const s = summarize([sample(1e6, 1000, 500)]);
+    assert.equal(s.megabitsPerSecond, 8);
+    assert.equal(s.transferMegabitsPerSecond, 16);
+  });
+
+  it('is null, not Infinity, when all time was latency', () => {
+    const s = summarize([sample(1e6, 100, 100)]);
+    assert.equal(s.transferMegabitsPerSecond, null);
+  });
+
+  it('never goes below the headline figure', () => {
+    const s = summarize([sample(5e6, 800, 100), sample(5e6, 900, 50)]);
+    assert.ok(s.transferMegabitsPerSecond >= s.megabitsPerSecond);
+  });
+});
+
+describe('formatting boundaries (regression)', () => {
+  it('rolls over instead of printing 1000.00 kB', () => {
+    assert.equal(formatBytes(999_999), '1.00 MB');
+    assert.equal(formatBytes(999_999_999), '1.00 GB');
+    assert.equal(formatBytes(999_994), '999.99 kB');
+  });
+
+  it('rolls over instead of printing 1000 ms', () => {
+    assert.equal(formatDuration(999.6), '1.00 s');
+    assert.equal(formatDuration(999.4), '999 ms');
+  });
+});

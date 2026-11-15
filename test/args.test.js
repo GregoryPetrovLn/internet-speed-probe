@@ -107,3 +107,33 @@ describe('parseUrl', () => {
     assert.throws(() => parseUrl('://'), UsageError);
   });
 });
+
+describe('parseArgs — numeric bounds (regression)', () => {
+  it('rejects a timeout above the setTimeout limit', () => {
+    // setTimeout clamps anything over 2^31-1 to 1 ms, so an unchecked value
+    // turned a generous deadline into an instant failure on every request.
+    assert.equal(parseArgs(['http://a.b/c', '-t', '2147483647']).timeoutMs, 2_147_483_647);
+    assert.throws(() => parseArgs(['http://a.b/c', '-t', '2147483648']), {
+      name: 'UsageError',
+      message: /at most 2147483647/,
+    });
+    assert.throws(() => parseArgs(['http://a.b/c', '--timeout', '99999999999999999999']), UsageError);
+  });
+
+  it('rejects request counts beyond exact integer precision', () => {
+    // Number("99999999999999999999") is 1e20: not the number the user typed.
+    assert.throws(() => parseArgs(['http://a.b/c', '-n', '99999999999999999999']), {
+      name: 'UsageError',
+      message: /at most/,
+    });
+  });
+
+  it('rejects an absurd redirect limit', () => {
+    assert.equal(parseArgs(['http://a.b/c', '-r', '1000']).maxRedirects, 1000);
+    assert.throws(() => parseArgs(['http://a.b/c', '-r', '1001']), UsageError);
+  });
+
+  it('takes the last value when a flag is repeated', () => {
+    assert.equal(parseArgs(['http://a.b/c', '-n', '3', '--requests', '7']).requests, 7);
+  });
+});

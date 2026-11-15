@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { createAgent, downloadOnce, withCacheBuster } from '../src/download.js';
+import { createAgentPool, downloadOnce, withCacheBuster } from '../src/download.js';
 import { HttpError, RequestError, TimeoutError } from '../src/errors.js';
 import { findClosedPort, startServer } from './helpers/server.js';
 
@@ -126,14 +126,14 @@ describe('downloadOnce — successful measurement', () => {
 
   it('reuses one socket with keep-alive and still measures correctly', async () => {
     const url = server.url('/bytes?size=4096');
-    const agent = createAgent(url, { keepAlive: true });
+    const agents = createAgentPool({ keepAlive: true });
     try {
       for (let i = 0; i < 3; i += 1) {
-        const result = await downloadOnce(url, { timeoutMs: 5000, agent });
+        const result = await downloadOnce(url, { timeoutMs: 5000, agents });
         assert.equal(result.bytes, 4096);
       }
     } finally {
-      agent.destroy();
+      agents.destroy();
     }
   });
 });
@@ -237,7 +237,7 @@ describe('downloadOnce — failures', () => {
       () => downloadOnce(server.url('/short-body'), { timeoutMs: 5000 }),
       (error) => {
         assert.ok(error instanceof RequestError, `got ${error.name}`);
-        assert.match(error.message, /incomplete body|aborted/);
+        assert.match(error.message, /incomplete body/);
         return true;
       },
     );
@@ -258,5 +258,139 @@ describe('withCacheBuster', () => {
     const twice = withCacheBuster(once, 'n2');
     assert.equal(twice.searchParams.getAll('_sp').length, 1);
     assert.equal(twice.searchParams.get('_sp'), 'n2');
+  });
+});
+
+describe('agent pool — cross-protocol redirects (regression)', () => {
+  it('hands out an agent matching each protocol', () => {
+    const pool = createAgentPool({ keepAlive: false });
+    try {
+      const forHttp = pool.for(new URL('http://a.b/'));
+      const forHttps = pool.for(new URL('https://a.b/'));
+      assert.notEqual(forHttp, forHttps, 'one agent cannot serve both protocols');
+      assert.equal(forHttp.protocol, 'http:');
+      assert.equal(forHttps.protocol, 'https:');
+      assert.equal(pool.for(new URL('http://c.d/')), forHttp, 'agents are reused per protocol');
+      assert.equal(
+        forHttps.maxCachedSessions,
+        0,
+        'TLS session caching would give requests 2..N an abbreviated handshake',
+      );
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  it('keeps the TLS session cache when --keep-alive is requested', () => {
+    const pool = createAgentPool({ keepAlive: true });
+    try {
+      assert.equal(pool.for(new URL('https://a.b/')).keepAlive, true);
+    } finally {
+      pool.destroy();
+    }
+  });
+
+  it('follows an http -> https redirect instead of failing on the agent protocol', async () => {
+    // The whole point: a single agent built from the original URL made Node
+    // throw `Protocol "https:" not supported. Expected "http:"` on every
+    // http://-to-https:// redirect, which is most of the real web. Here the
+    // https target is a closed port, so reaching a connection-level failure
+    // (and a typed RequestError) proves the request was actually attempted.
+    const closed = await findClosedPort();
+    await assert.rejects(
+      () =>
+        downloadOnce(server.url(`/redirect?to=${encodeURIComponent(`https://127.0.0.1:${closed}/x`)}`), {
+          timeoutMs: 5000,
+        }),
+      (error) => {
+        assert.ok(error instanceof RequestError, `expected a typed error, got ${error.name}`);
+        assert.doesNotMatch(
+          error.message,
+          /Protocol .* not supported/,
+          'the agent must match the protocol of the hop being requested',
+        );
+        assert.match(error.message, /ECONNREFUSED|connect/i);
+        return true;
+      },
+    );
+  });
+});
+
+describe('bodiless responses (regression)', () => {
+  for (const code of [204, 304]) {
+    it(`reports ${code} as having nothing to measure, not as a corrupt body`, async () => {
+      await assert.rejects(
+        () => downloadOnce(server.url(`/status?code=${code}`), { timeoutMs: 5000 }),
+        (error) => {
+          assert.ok(error instanceof RequestError);
+          assert.match(error.message, new RegExp(`HTTP ${code}.*nothing to measure`));
+          assert.doesNotMatch(error.message, /incomplete body/);
+          return true;
+        },
+      );
+    });
+  }
+});
+
+describe('redirect cache busting (regression)', () => {
+  it('busts the cache on the redirect target too', async () => {
+    // An origin redirecting to a CDN is the common shape; without this the
+    // final (cacheable) URL was byte-identical on every request.
+    server.requests.length = 0;
+    await downloadOnce(server.url('/redirect?to=/bytes%3Fsize%3D32'), { timeoutMs: 5000 });
+    await downloadOnce(server.url('/redirect?to=/bytes%3Fsize%3D32'), { timeoutMs: 5000 });
+    const finals = server.requests.filter((r) => r.path === '/bytes');
+    assert.equal(finals.length, 2);
+    assert.ok(finals[0].query.get('_sp'), 'the redirect target must be busted as well');
+    assert.notEqual(finals[0].query.get('_sp'), finals[1].query.get('_sp'));
+  });
+
+  it('leaves a signed redirect target untouched', async () => {
+    // Adding a parameter to a pre-signed URL invalidates the signature.
+    server.requests.length = 0;
+    const signed = '/bytes?size=32&X-Amz-Signature=deadbeef';
+    await downloadOnce(server.url(`/redirect?to=${encodeURIComponent(signed)}`), {
+      timeoutMs: 5000,
+    });
+    const final = server.requests.find((r) => r.path === '/bytes');
+    assert.equal(final.query.get('X-Amz-Signature'), 'deadbeef');
+    assert.equal(final.query.get('_sp'), null, 'a signed URL must not be modified');
+  });
+
+  it('allows exactly maxRedirects hops and rejects the next one', async () => {
+    const ok = await downloadOnce(server.url('/redirect-chain?n=2'), {
+      timeoutMs: 5000,
+      maxRedirects: 2,
+    });
+    assert.equal(ok.redirects, 2, '-r 2 must allow 2 hops');
+    await assert.rejects(
+      () => downloadOnce(server.url('/redirect-chain?n=3'), { timeoutMs: 5000, maxRedirects: 2 }),
+      /too many redirects/,
+      '-r 2 must reject the 3rd hop',
+    );
+  });
+});
+
+describe('TTFB is really measured (regression)', () => {
+  it('separates first-byte latency from body streaming time', async () => {
+    // 4 chunks 60 ms apart: the first byte arrives early, the body takes ~3x
+    // longer. Asserting only ttfb <= total would pass even if ttfb were
+    // copied from total, so pin the ratio.
+    const result = await downloadOnce(server.url('/chunked?size=4000&chunks=4&delay=60'), {
+      timeoutMs: 5000,
+    });
+    assert.ok(
+      result.ttfbMs < result.totalMs / 2,
+      `ttfb ${result.ttfbMs.toFixed(1)} ms should be well under half of total ${result.totalMs.toFixed(1)} ms`,
+    );
+  });
+
+  it('charges a slow-to-respond server to latency, not to the body', async () => {
+    const result = await downloadOnce(server.url('/slow-headers?delay=150'), { timeoutMs: 5000 });
+    assert.ok(result.ttfbMs >= 140);
+    assert.ok(
+      result.totalMs - result.ttfbMs < 50,
+      'an 8-byte body must not account for the 150 ms wait',
+    );
   });
 });

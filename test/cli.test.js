@@ -1,16 +1,30 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 import { startServer } from './helpers/server.js';
 
 const CLI = fileURLToPath(new URL('../speedtest.js', import.meta.url));
 
-/** Runs the real CLI as a child process and never throws on a non-zero exit. */
+/**
+ * Runs the real CLI as a child process and never throws on a non-zero exit.
+ * `code` is null when the child was signalled (killed by the timeout), so a
+ * hang can never be mistaken for a clean exit 0.
+ */
 function run(args, { timeout = 30_000 } = {}) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { timeout }, (error, stdout, stderr) => {
-      resolve({ code: error?.code ?? 0, stdout, stderr, killed: Boolean(error?.killed) });
+    execFile(process.execPath, [CLI, ...args], { timeout, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const killed = Boolean(error?.killed) || Boolean(error?.signal);
+      resolve({ code: killed ? null : (error?.code ?? 0), stdout, stderr, killed });
+    });
+  });
+}
+
+/** Runs the CLI through a shell so stdout can be piped to another process. */
+function runPiped(command, { timeout = 60_000 } = {}) {
+  return new Promise((resolve) => {
+    exec(command, { timeout, maxBuffer: 64 * 1024 * 1024, shell: '/bin/sh' }, (error, stdout, stderr) => {
+      resolve({ code: error?.code ?? 0, stdout, stderr });
     });
   });
 }
@@ -139,5 +153,62 @@ describe('CLI — failure handling', () => {
     assert.equal(code, 1);
     assert.match(stdout, /failed requests\s+2/);
     assert.ok(Date.now() - started < 10_000, 'should fail fast');
+  });
+});
+
+describe('CLI — stdout handling (regression)', () => {
+  it('does not truncate a large --json report when stdout is a pipe', async () => {
+    // process.exit() does not wait for an async stdout flush, so anything past
+    // the 64 KB pipe buffer was silently dropped — while still exiting 0.
+    const url = server.url('/bytes?size=16').href;
+    const { code, stdout } = await runPiped(
+      `"${process.execPath}" "${CLI}" "${url}" -n 800 --json | cat`,
+    );
+    assert.equal(code, 0);
+    assert.ok(
+      stdout.length > 65_536,
+      `expected more than one pipe buffer, got ${stdout.length} bytes`,
+    );
+    const report = JSON.parse(stdout); // would throw on a truncated object
+    assert.equal(report.successCount, 800);
+    assert.equal(report.samples.length, 800);
+  });
+
+  it('stops quietly when the reader closes the pipe early', async () => {
+    const url = server.url('/bytes?size=16').href;
+    const { stderr } = await runPiped(
+      `"${process.execPath}" "${CLI}" "${url}" -n 50 2>&1 >/dev/null | cat`,
+    );
+    assert.equal(stderr, '', 'nothing should be written to stderr');
+
+    const piped = await runPiped(`"${process.execPath}" "${CLI}" "${url}" -n 50 | head -3`);
+    assert.doesNotMatch(piped.stdout, /EPIPE/);
+    assert.doesNotMatch(piped.stderr, /EPIPE|at printProgress/, 'no stack trace on a closed pipe');
+  });
+
+  it('exposes redirect information in --json', async () => {
+    const { code, stdout } = await run([
+      server.url('/redirect?to=/bytes%3Fsize%3D64').href,
+      '-n',
+      '1',
+      '--json',
+    ]);
+    assert.equal(code, 0);
+    const report = JSON.parse(stdout);
+    assert.equal(report.redirects, 1);
+    assert.match(report.finalUrl, /\/bytes/);
+    assert.ok(report.transferMegabitsPerSecond >= report.megabitsPerSecond);
+  });
+
+  it('reports both the end-to-end and the transfer-only speed', async () => {
+    const { stdout } = await run([server.url('/bytes?size=20000').href, '-n', '2']);
+    assert.match(stdout, /download speed\s+[\d.]+ Mbit\/s/);
+    assert.match(stdout, /transfer only\s+[\d.]+ Mbit\/s/);
+  });
+
+  it('rejects an over-large timeout instead of failing every request', async () => {
+    const { code, stderr } = await run([server.url('/bytes?size=16').href, '-t', '2147483648']);
+    assert.equal(code, 2);
+    assert.match(stderr, /at most 2147483647/);
   });
 });

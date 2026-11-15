@@ -37,6 +37,7 @@ export function summarize(samples, failedCount = 0) {
     avgBytes: null,
     megabitsPerSecond: null,
     megabytesPerSecond: null,
+    transferMegabitsPerSecond: null,
   };
   if (samples.length === 0) return base;
 
@@ -47,6 +48,7 @@ export function summarize(samples, failedCount = 0) {
   let totalBytes = 0;
   let totalMs = 0;
   let totalTtfbMs = 0;
+  let totalTransferMs = 0;
   let minMs = Infinity;
   let maxMs = -Infinity;
   for (let i = 0; i < samples.length; i += 1) {
@@ -55,6 +57,9 @@ export function summarize(samples, failedCount = 0) {
     totalBytes += bytes;
     totalMs += ms;
     totalTtfbMs += ttfbMs;
+    // Body-only time: the request minus everything that happened before the
+    // first byte arrived (DNS, TCP, TLS, redirects, server think time).
+    totalTransferMs += Math.max(0, ms - ttfbMs);
     if (ms < minMs) minMs = ms;
     if (ms > maxMs) maxMs = ms;
   }
@@ -65,6 +70,14 @@ export function summarize(samples, failedCount = 0) {
   // so we report null instead of Infinity.
   const seconds = totalMs / 1000;
   const megabytesPerSecond = seconds > 0 ? totalBytes / BYTES_PER_MB / seconds : null;
+
+  // Second figure, reported alongside: the same bytes over body-transfer time
+  // only. The headline number charges latency and redirect round-trips to
+  // bandwidth, which is the honest answer to "how fast does this file
+  // download" but understates the link on small files and redirect chains.
+  const transferSeconds = totalTransferMs / 1000;
+  const transferMegabitsPerSecond =
+    transferSeconds > 0 ? (totalBytes * BITS_PER_BYTE) / BYTES_PER_MB / transferSeconds : null;
 
   return {
     ...base,
@@ -78,6 +91,7 @@ export function summarize(samples, failedCount = 0) {
     avgBytes: totalBytes / samples.length,
     megabytesPerSecond,
     megabitsPerSecond: megabytesPerSecond === null ? null : megabytesPerSecond * BITS_PER_BYTE,
+    transferMegabitsPerSecond,
   };
 }
 
@@ -91,13 +105,19 @@ export function formatBytes(bytes) {
     value /= 1000;
     unit += 1;
   }
+  // Step up once more when rounding would print "1000.00 kB" (999 999 bytes).
+  if (unit < units.length - 1 && Number(value.toFixed(unit === 0 ? 0 : 2)) >= 1000) {
+    value /= 1000;
+    unit += 1;
+  }
   const digits = unit === 0 ? 0 : 2;
   return `${value.toFixed(digits)} ${units[unit]}`;
 }
 
 export function formatDuration(ms) {
   if (ms === null || !Number.isFinite(ms)) return 'n/a';
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(0)} ms`;
+  // 999.6 ms must print as "1.00 s", not as "1000 ms".
+  return ms >= 999.5 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(0)} ms`;
 }
 
 export function formatSpeed(megabitsPerSecond) {
