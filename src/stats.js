@@ -40,9 +40,24 @@ export function summarize(samples, failedCount = 0) {
   };
   if (samples.length === 0) return base;
 
-  const durations = samples.map((s) => s.totalMs);
-  const totalBytes = samples.reduce((sum, s) => sum + s.bytes, 0);
-  const totalMs = durations.reduce((sum, ms) => sum + ms, 0);
+  // One pass, and min/max without the spread operator: Math.min(...array)
+  // throws RangeError ("too many arguments") somewhere above ~100k elements,
+  // which `-n 200000` would hit.
+  const durations = new Array(samples.length);
+  let totalBytes = 0;
+  let totalMs = 0;
+  let totalTtfbMs = 0;
+  let minMs = Infinity;
+  let maxMs = -Infinity;
+  for (let i = 0; i < samples.length; i += 1) {
+    const { bytes, totalMs: ms, ttfbMs } = samples[i];
+    durations[i] = ms;
+    totalBytes += bytes;
+    totalMs += ms;
+    totalTtfbMs += ttfbMs;
+    if (ms < minMs) minMs = ms;
+    if (ms > maxMs) maxMs = ms;
+  }
 
   // Throughput is total bytes over total time, not the mean of per-request
   // speeds: averaging ratios would over-weight small or fast responses.
@@ -56,10 +71,10 @@ export function summarize(samples, failedCount = 0) {
     totalBytes,
     totalMs,
     avgMs: totalMs / samples.length,
-    minMs: Math.min(...durations),
-    maxMs: Math.max(...durations),
+    minMs,
+    maxMs,
     medianMs: median(durations),
-    avgTtfbMs: samples.reduce((sum, s) => sum + s.ttfbMs, 0) / samples.length,
+    avgTtfbMs: totalTtfbMs / samples.length,
     avgBytes: totalBytes / samples.length,
     megabytesPerSecond,
     megabitsPerSecond: megabytesPerSecond === null ? null : megabytesPerSecond * BITS_PER_BYTE,
