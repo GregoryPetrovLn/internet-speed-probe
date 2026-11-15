@@ -47,7 +47,7 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 1. Основной сценарий: 10 запросов по умолчанию
 
-![10 последовательных запросов к файлу 10 МБ: таблица по каждому запросу и итоговый отчёт](docs/screenshots/01-main-run.png)
+<img src="docs/screenshots/01-main-run.png" alt="10 последовательных запросов к файлу 10 МБ: таблица по каждому запросу и итоговый отчёт" width="620">
 
 Десять последовательных запросов к файлу на 10 МБ — ровно то, что просит задание.
 По каждому запросу видно объём, время и мгновенную скорость, дальше итог.
@@ -64,7 +64,7 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 2. Редирект со сменой протокола
 
-![Запрос к http:// URL, который редиректит на https://, с отчётом и строкой followed 1 redirect](docs/screenshots/02-redirect.png)
+<img src="docs/screenshots/02-redirect.png" alt="Запрос к http:// URL, который редиректит на https://, с отчётом и строкой followed 1 redirect" width="620">
 
 `http://` URL, который сервер редиректит на `https://`. Утилита проходит редирект и
 мерит финальный ресурс, а внизу отчитывается, куда в итоге пришла.
@@ -83,7 +83,7 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 3. Машиночитаемый вывод `--json`
 
-![JSON-объект с полями successCount, totalBytes, megabitsPerSecond и массивом samples](docs/screenshots/03-json.png)
+<img src="docs/screenshots/03-json.png" alt="JSON-объект с полями successCount, totalBytes, megabitsPerSecond и массивом samples" width="620">
 
 Для скриптов и CI. На `stdout` идёт ровно один JSON-объект и ничего больше, так что
 его можно сразу направить в `jq` или в файл.
@@ -97,7 +97,7 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 4. Сетевые ошибки и коды выхода
 
-![Прогоны против 404 и закрытого порта: все запросы неуспешны, причины сгруппированы, выход 1](docs/screenshots/04-network-errors.png)
+<img src="docs/screenshots/04-network-errors.png" alt="Прогоны против 404 и закрытого порта: все запросы неуспешны, причины сгруппированы, выход 1" width="620">
 
 Слева 404, справа закрытый порт. В обоих случаях прогон доходит до конца, а не падает
 на первой ошибке.
@@ -112,7 +112,7 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 5. Неверные аргументы и таймаут
 
-![Отказ на ftp:// URL с кодом 2 и прогон с таймаутом 1500 мс против медленного сервера](docs/screenshots/05-usage-and-timeout.png)
+<img src="docs/screenshots/05-usage-and-timeout.png" alt="Отказ на ftp:// URL с кодом 2 и прогон с таймаутом 1500 мс против медленного сервера" width="620">
 
 Сверху — `ftp://` URL: сразу отказ со справкой и **кодом 2**, он отличается от кода 1,
 чтобы скрипт мог различить «я опечатался в команде» и «сеть недоступна».
@@ -124,13 +124,13 @@ node speedtest.js https://example.com/heavy.jpg --json
 
 ### 6. Справка
 
-![Вывод node speedtest.js --help со списком всех опций](docs/screenshots/06-help.png)
+<img src="docs/screenshots/06-help.png" alt="Вывод node speedtest.js --help со списком всех опций" width="620">
 
 `--help` со всеми опциями и примерами.
 
 ### 7. Тесты
 
-![Вывод npm test: 20 наборов тестов, 97 тестов пройдено, 0 упало](docs/screenshots/07-tests.png)
+<img src="docs/screenshots/07-tests.png" alt="Вывод npm test: 20 наборов тестов, 97 тестов пройдено, 0 упало" width="620">
 
 `npm test` — 97 тестов, 0 падений, около 3.4 секунды (список наборов отфильтрован
 для компактности, итоговые счётчики — как есть).
